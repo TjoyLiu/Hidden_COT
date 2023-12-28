@@ -1,0 +1,7 @@
+[
+    {
+        "path": "/mnt/pfs/zitao_team/tianqiaoliu/Project/papers/hidden_cot/data/GSM8K/COT_model_train_data.json",
+        "data_name": "gsm8k_cot_model",
+        "sample_ratio": 1
+    }
+]

@@ -1,0 +1,7 @@
+[
+    {
+        "path": "/mnt/pfs/zitao_team/tianqiaoliu/Project/papers/hidden_cot/data/GSM8K/hcot_llm_data.json",
+        "data_name": "directly_gsm8k_no_ct",
+        "sample_ratio": 1
+    }
+]
