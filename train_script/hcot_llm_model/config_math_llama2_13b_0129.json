@@ -1,0 +1,33 @@
+{
+    "_name_or_path": "/mnt/pfs/zitao_team/big_model/raw_models/Llama-2-13b-hf",
+    "architectures": [
+        "LlamaForCausalLM"
+    ],
+    "attention_bias": false,
+    "bos_token_id": 1,
+    "eos_token_id": 2,
+    "hidden_act": "silu",
+    "hidden_size": 5120,
+    "initializer_range": 0.02,
+    "intermediate_size": 13824,
+    "max_position_embeddings": 2048,
+    "model_type": "llama",
+    "mse_ratio": 10.0,
+    "num_attention_heads": 40,
+    "num_hidden_layers": 40,
+    "num_key_value_heads": 40,
+    "pad_token_id": 0,
+    "pretraining_tp": 1,
+    "rms_norm_eps": 1e-05,
+    "rope_scaling": {
+        "factor": 2.0,
+        "type": "linear"
+    },
+    "rope_theta": 10000.0,
+    "tie_word_embeddings": false,
+    "torch_dtype": "float16",
+    "transformers_version": "4.31.0.dev0",
+    "use_cache": true,
+    "vocab_size": 32000,
+    "cot_model_path": "/mnt/pfs/zitao_team/tianqiaoliu/Project/teammates/hidden_cot/COT_model_training/output/7b-bs-mse-10-0-llama2-13b/checkpoint-800"
+}

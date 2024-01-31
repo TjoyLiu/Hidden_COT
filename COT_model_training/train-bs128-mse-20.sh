@@ -13,7 +13,6 @@ output_dir=/mnt/pfs/zitao_team/liuchangkun1/repos/tiny-gpt/1215/output/7b-bs-128
 deepspeed_config_file=ds_zero2_no_offload.json
 export WANDB_API_KEY=b1b8f5091321fdfaf46a376a95dd8938b2e0ffce
 
-
 torchrun --nnodes 1 --nproc_per_node 8 --master_port=20001 train.py \
     --deepspeed ${deepspeed_config_file} \
     --model_name_or_path ${model_name_or_path} \
@@ -38,4 +37,4 @@ torchrun --nnodes 1 --nproc_per_node 8 --master_port=20001 train.py \
     --gradient_checkpointing True \
     --overwrite_output_dir \
     --lazy_preprocess True
-    # --model_name_or_path ${model_name_or_path}
+# --model_name_or_path ${model_name_or_path}

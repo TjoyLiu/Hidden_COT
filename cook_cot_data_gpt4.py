@@ -106,9 +106,9 @@ def process_files(prompt_dir, keep_examples, system_input_md_path):
     return system_input, examples_input
 
 
-prompt_dir = "/mnt/pfs/zitao_team/tianqiaoliu/Project/papers/hidden_cot/prompt"
+prompt_dir = "/mnt/pfs/zitao_team/tianqiaoliu/Project/teammates/hidden_cot/prompt"
 system_input_info = (
-    "/mnt/pfs/zitao_team/tianqiaoliu/Project/papers/hidden_cot/prompt/instruction.md"
+    "/mnt/pfs/zitao_team/tianqiaoliu/Project/teammates/hidden_cot/prompt/instruction.md"
 )
 system_input_global, examples_input_global = process_files(
     prompt_dir, [], system_input_info
@@ -186,92 +186,41 @@ if __name__ == "__main__":
     parser.add_argument("--data_name", type=str)
     args = parser.parse_args()
     debug = False
-    n_jobs = 400
+    n_jobs = 200
     input_train_data = "/mnt/pfs/zitao_team/tianqiaoliu/Project/papers/hidden_cot/data/GSM8K/train.jsonl"
     # input_test_data = "/mnt/pfs/zitao_team/tianqiaoliu/Project/papers/hidden_cot/data/GSM8K/test.jsonl"
     with open(args.input_data_path, "r") as f:
         train_data_list = f.readlines()
     process_train_data = []
-    for line in train_data_list:
-        line_js = json.loads(line)
-        answer_string = line_js["answer"]
-        answer, analysis = (
-            answer_string.split("\n####")[1].strip(),
-            answer_string.split("\n####")[0].strip(),
-        )
-        process_train_data.append(
-            {"question": line_js["question"], "answer": answer, "analysis": analysis}
-        )
+    if args.data_name == "gsm8k":
+        for line in train_data_list:
+            line_js = json.loads(line)
+            answer_string = line_js["answer"]
+            answer, analysis = (
+                answer_string.split("\n####")[1].strip(),
+                answer_string.split("\n####")[0].strip(),
+            )
+            process_train_data.append(
+                {
+                    "question": line_js["question"],
+                    "answer": answer,
+                    "analysis": analysis,
+                }
+            )
+    elif args.data_name.lower() == "math":
+        for line in train_data_list:
+            line_js = json.loads(line)
+            answer_string = line_js["answer"]
+            analysis = line_js["output"]
+            process_train_data.append(
+                {
+                    "question": line_js["input"],
+                    "answer": answer_string,
+                    "analysis": analysis,
+                }
+            )
+    else:
+        pass
 
-    n_jobs = 10
+    # n_jobs = 10
     process_dataset(process_train_data, args.output_data_path, n_jobs)
-    # output_dir = "/mnt/pfs/zitao_team/tianqiaoliu/Project/six_dimension_ability/check_correct"
-    # data_to_fill_record = []
-    # model_name = "ed1_plus"
-    # data_name = "test"
-    # this_model_data_save_dir = os.path.join(
-    #     output_dir, model_name, data_name
-    # )
-    # all_json_files = glob.glob(
-    #     os.path.join(this_model_data_save_dir, "*.json")
-    # )
-    # print(model_name)
-    # print(data_name)
-
-    # for one_json_file in all_json_files:
-    #     with open(one_json_file, "r") as f:
-    #         json_content = f.readlines()
-    #     base_json_file_name = os.path.basename(one_json_file)
-    #     extraction_output_file = os.path.join(
-    #         output_dir,
-    #         model_name,
-    #         data_name,
-    #         base_json_file_name.replace(".json", "")
-    #         + "_gpt4_extraction.jsonl",
-    #     )
-    #     if os.path.exists(extraction_output_file):
-    #         with open(extraction_output_file, "r") as f:
-    #             extractioned_lines = f.readlines()
-
-    #         if len(extractioned_lines) != len(json_content):
-    #             # This is waited to be processed
-    #             data_to_fill_record.append((model_name, data_name, len(json_content)-len(extractioned_lines)))
-    #             print(data_name)
-    #             print(model_name)
-    #             if len(json_content)-len(extractioned_lines) > 0:
-    #                 lines_to_fill = find_no_extraction(extractioned_lines, json_content)
-    #                 if data_name == "math-4shot":
-    #                     process_dataset_math(
-    #                         lines_to_fill, extraction_output_file, n_jobs
-    #                     )
-    #                 else:
-    #                     process_dataset(
-    #                         lines_to_fill, extraction_output_file, n_jobs
-    #                     )
-    #                 # for one_json_content in tqdm(json_content):
-    #                 #     response = process_row(one_json_content)
-    #                 #     with open(extraction_output_file, "a") as f:
-    #                 #         f.write(json.dumps(response, ensure_ascii=False)+"\n")
-    #             print(
-    #                 "Done for model {} data {} partition {}".format(
-    #                     model_name, data_name, base_json_file_name
-    #                 )
-    #             )
-    #     else:
-    #         print(data_name)
-    #         print(model_name)
-    #         print("No record for this")
-    #         if data_name == "math-4shot":
-    #             process_dataset_math(
-    #                 json_content, extraction_output_file, n_jobs
-    #             )
-    #         else:
-    #             process_dataset(
-    #                 json_content, extraction_output_file, n_jobs
-    #             )
-    #         print(
-    #                 "Done for model {} data {} partition {}".format(
-    #                     model_name, data_name, base_json_file_name
-    #                 )
-    #             )
-    # print("This is Done")

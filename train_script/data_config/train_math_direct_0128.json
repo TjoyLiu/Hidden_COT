@@ -1,0 +1,12 @@
+[
+    {
+        "path": "/mnt/pfs/zitao_team/tianqiaoliu/Project/teammates/hidden_cot/data/MATH/h_cot_direct_conv_0126.json",
+        "data_name": "directly_math",
+        "sample_ratio": 1
+    },
+    {
+        "path": "/mnt/pfs/zitao_team/tianqiaoliu/Project/teammates/hidden_cot/data/GSM8K/h_cot_direct_conv_0126.json",
+        "data_name": "directly_gsm8k",
+        "sample_ratio": 1
+    }
+]

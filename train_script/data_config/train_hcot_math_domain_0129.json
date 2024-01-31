@@ -1,0 +1,12 @@
+[
+    {
+        "path": "/mnt/pfs/zitao_team/tianqiaoliu/Project/teammates/hidden_cot/data/MATH/hcot_llm_data_0126.json",
+        "data_name": "math_hcot_llm",
+        "sample_ratio": 1
+    },
+    {
+        "path": "/mnt/pfs/zitao_team/tianqiaoliu/Project/teammates/hidden_cot/data/GSM8K/hcot_llm_data_0126.json",
+        "data_name": "gsm8k_hcot_llm",
+        "sample_ratio": 1
+    }
+]

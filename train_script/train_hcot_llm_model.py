@@ -21,6 +21,7 @@ import pathlib
 from typing import Dict, Optional, Sequence
 
 import numpy as np
+import random
 import torch
 from torch.utils.data import Dataset
 import transformers
@@ -316,8 +317,9 @@ def make_supervised_data_module(
     )
     rank0_print("Loading data...")
 
-    train_json = json.load(open(data_args.data_path, "r"))
-    train_dataset = dataset_cls(train_json, tokenizer=tokenizer)
+    # train_json = json.load(open(data_args.data_path, "r"))
+    raw_data = load_all_data(data_args.data_path)
+    train_dataset = dataset_cls(raw_data, tokenizer=tokenizer)
 
     if data_args.eval_data_path:
         eval_json = json.load(open(data_args.eval_data_path, "r"))
@@ -326,6 +328,59 @@ def make_supervised_data_module(
         eval_dataset = None
 
     return dict(train_dataset=train_dataset, eval_dataset=eval_dataset)
+
+
+def sample_jsonl(path, sample_ratio):
+    data = []
+    with open(path, "r") as file:
+        for line in file:
+            data.append(json.loads(line))
+    random.shuffle(data)  # 随机打乱
+    data = data[: int(len(data) * sample_ratio)]  # 取样
+    return data
+
+
+def data_convert(data):
+    if "prompt" in data and "response" in data:
+        conversation = [
+            {"from": "human", "value": data["prompt"]},
+            {"from": "gpt", "value": data["response"]},
+        ]
+        data["conversations"] = conversation
+        return data
+    else:
+        return data
+
+
+def load_one_data(one_data):
+    path = one_data["path"]
+    sample_ratio = float(one_data["sample_ratio"])
+    if sample_ratio == 0:
+        # skip this file
+        return []
+    filetype = path.split(".")[-1]
+    if filetype == "json":
+        one_data = json.load(open(path, "r"))
+        random.shuffle(one_data)  # 随机打乱
+        one_data = one_data[: int(len(one_data) * sample_ratio)]  # 顺序采样
+    elif filetype == "jsonl":
+        one_data = sample_jsonl(path, sample_ratio)
+    # for item in one_data:
+    #     data_convert(item)
+    print(f"{path} has {len(one_data)} data, sample ratio {sample_ratio}")
+    return one_data
+
+
+def load_all_data(config_path):
+    data_sources = json.load(open(config_path, "r"))
+    raw_data = []
+    for one_data in data_sources:
+        one_data = load_one_data(one_data)
+        raw_data += one_data
+    print("total data:", len(raw_data))
+    random.seed(42)
+    random.shuffle(raw_data)
+    return raw_data
 
 
 def train():
@@ -365,7 +420,14 @@ def train():
     tokenizer.padding_side = "left"
     # 不能加这个token
     # If add special tokens, add this
-    special_tokens_dict = {"additional_special_tokens": ["<[COT]>", "</[COT]>"]}
+    special_tokens_dict = {
+        "additional_special_tokens": [
+            "<[COT]>",
+            "</[COT]>",
+            "<equation>",
+            "</equation>",
+        ]
+    }
     num_added_toks = tokenizer.add_special_tokens(special_tokens_dict)
     if tokenizer.pad_token != tokenizer.unk_token:
         tokenizer.pad_token = tokenizer.unk_token

@@ -10,6 +10,7 @@ from model.modeling_llama import (
     LlamaForLLMHcotCausalLM,
     LlamaModel,
 )
+
 import abc
 import gc
 import math
@@ -265,11 +266,20 @@ def generate_chat_responses(model_path, data_file, output_file, args):
 
     device = "cpu" if not torch.cuda.is_available() else "cuda"
     if args.hcot_model:
-        model = LlamaForLLMHcotCausalLM.from_pretrained(args.model_path)
-        tokenizer = AutoTokenizer.from_pretrained(args.model_path)
-        model.eval()
-        device = torch.device("cuda")
-        model.to(device)
+        if "llama" in args.model_name:
+            model = LlamaForLLMHcotCausalLM.from_pretrained(args.model_path)
+            tokenizer = AutoTokenizer.from_pretrained(args.model_path)
+            model.eval()
+            device = torch.device("cuda")
+            model.to(device)
+        elif "mistral" in args.model_name:
+            from mistral_model.modeling_mistral import MistralForLLMHcotCausalLM
+
+            model = MistralForLLMHcotCausalLM.from_pretrained(args.model_path)
+            tokenizer = AutoTokenizer.from_pretrained(args.model_path)
+            model.eval()
+            device = torch.device("cuda")
+            model.to(device)
     else:
         model, tokenizer = load_model(
             model_path, device=device, num_gpus=args.device_num
