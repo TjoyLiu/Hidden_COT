@@ -1,2 +1,2 @@
 # Hidden_COT
-Treat COT as hidden representation
+Offical implementation of Expediting and Elevating Large Language Model Reasoning via Hidden Chain-of-Thought Decoding
