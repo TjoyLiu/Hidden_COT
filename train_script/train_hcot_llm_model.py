@@ -407,9 +407,11 @@ def train():
     #     )
     # else:
     tokenizer = transformers.AutoTokenizer.from_pretrained(
-        model_args.model_name_or_path
-        if model_args.model_name_or_path
-        else model_args.tokenizer_name_or_path,
+        (
+            model_args.model_name_or_path
+            if model_args.model_name_or_path
+            else model_args.tokenizer_name_or_path
+        ),
         cache_dir=training_args.cache_dir,
         model_max_length=training_args.model_max_length,
         padding_side=model_args.padding_side,
