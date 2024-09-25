@@ -1885,6 +1885,8 @@ class LlamaForLLMHcotCausalLM(LlamaPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        history_input_ids: Optional[torch.Tensor] = None,
+        check_hcot: Optional[bool] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         r"""
         Args:
@@ -1913,22 +1915,52 @@ class LlamaForLLMHcotCausalLM(LlamaPreTrainedModel):
         ```"""
         # Get the last layer representation of the special token from cot_model
         inputs_embeds = self.model.embed_tokens(input_ids)
-        if self.cot_model:
+        # if input_ids.shape[1] != 1:
+        #     with torch.no_grad():  # Ensure that cot_model does not update weights
+        #         cot_outputs = self.cot_model(
+        #             input_ids=input_ids,
+        #             attention_mask=attention_mask,
+        #             # past_key_values=past_key_values,
+        #         )
+        #         cot_hidden_states = cot_outputs.last_hidden_state
+        #     # Find the index of the special token
+        #     cot_token_indices = (input_ids == self.config.hcot_token_idx).nonzero(
+        #         as_tuple=True
+        #     )
+        #     cot_special_token_repr = cot_hidden_states[cot_token_indices]
+        #     inputs_embeds[cot_token_indices] += cot_special_token_repr
+
+        if check_hcot:
+            currrent_ids = history_input_ids
             with torch.no_grad():  # Ensure that cot_model does not update weights
                 cot_outputs = self.cot_model(
-                    input_ids=input_ids, attention_mask=attention_mask
+                    input_ids=currrent_ids,
+                    attention_mask=attention_mask,
+                    # past_key_values=past_key_values,
                 )
                 cot_hidden_states = cot_outputs.last_hidden_state
             # Find the index of the special token
-            cot_token_indices = (input_ids == self.config.hcot_token_idx).nonzero(
-                as_tuple=True
-            )
+            # cot_token_indices = (
+            #     currrent_ids == self.config.hcot_token_idx
+            # ).nonzero(as_tuple=True)
 
-            # Get the representation of the special token
-            cot_special_token_repr = cot_hidden_states[cot_token_indices]
-            # Process input through self.model's embedding layer
-            # Add cot_model's special token representation to the corresponding position in inputs_embeds
-            inputs_embeds[cot_token_indices] += cot_special_token_repr
+            # Get the representation of the special token, the latest token respresentation
+            cot_special_token_repr = cot_hidden_states[-1][-1]
+            inputs_embeds += cot_special_token_repr.reshape(
+                    1, 1, cot_special_token_repr.shape[0]
+                )
+            # if cot_token_indices[0].shape[0] != 0:
+            #     cot_special_token_repr = cot_hidden_states[cot_token_indices][
+            #         -1
+            #     ]
+            #     # Process input through self.model's embedding layer
+            #     # Add cot_model's special token representation to the corresponding position in inputs_embeds
+            #     inputs_embeds += cot_special_token_repr.reshape(
+            #         1, 1, cot_special_token_repr.shape[0]
+            #     )
+            # else:
+            #     cot_special_token_repr = cot_hidden_states[cot_token_indices]
+            #     inputs_embeds[cot_token_indices] += cot_special_token_repr
 
         output_attentions = (
             output_attentions
