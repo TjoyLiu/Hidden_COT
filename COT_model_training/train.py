@@ -22,6 +22,7 @@ from typing import Dict, Optional, Sequence
 
 import numpy as np
 import torch
+import random
 from torch.utils.data import Dataset
 import transformers
 from transformers import Trainer
@@ -33,9 +34,11 @@ IGNORE_TOKEN_ID = LabelSmoother.ignore_index
 
 try:
     from llama2_flash_attn_monkey_patch import replace_llama_attn_with_flash_attn
+
     replace_llama_attn_with_flash_attn()
 except ImportError:
     print("Failed to import llama2_flash_attn_monkey_patch. Skip.")
+
 
 @dataclass
 class ModelArguments:
@@ -58,7 +61,10 @@ class ModelArguments:
         },
     )
     config_name: Optional[str] = field(
-        default=None, metadata={"help": "Pretrained config name or path if not the same as model_name"}
+        default=None,
+        metadata={
+            "help": "Pretrained config name or path if not the same as model_name"
+        },
     )
 
 
@@ -84,6 +90,14 @@ class TrainingArguments(transformers.TrainingArguments):
         },
     )
     mse_ratio: float = field(default=2.0, metadata={"help": "MSE loss ratio"})
+    addalign: bool = field(
+        default=False,
+        metadata={"help": "whether to add alignment loss in cot model training"},
+    )
+    addcontrastive: bool = field(
+        default=False,
+        metadata={"help": "whether to add alignment loss in cot model training"},
+    )
 
 
 local_rank = None
@@ -109,7 +123,9 @@ def preprocess(
     sources,
     tokenizer: transformers.PreTrainedTokenizer,
 ) -> Dict:
-    conv = get_conv_template("none")
+    conv = get_conv_template(
+        "hcot"
+    )  # 0411我更新了这个模版，这里变成了hcot不知道会不会有影响，因为之前都是none的，现在训练的cot model都是none的模版的结果。
     roles = {"human": conv.roles[0], "gpt": conv.roles[1]}
 
     # Apply prompt templates
@@ -138,14 +154,16 @@ def preprocess(
 
     # only one turn is used for training
     vocab = tokenizer.get_vocab()
-    cot_begin_token = vocab['<[COT]>']
-    cot_end_token = vocab['</[COT]>']
+    cot_begin_token = vocab["<[COT]>"]
+    cot_end_token = vocab["</[COT]>"]
     for target in targets:
         # find the last <[COT]> token
         cot_begin_idx = (target == cot_begin_token).nonzero(as_tuple=True)[0][-1]
         # find the first </[COT]> token
         cot_end_idx = (target == cot_end_token).nonzero(as_tuple=True)[0][0]
-        assert cot_begin_idx < cot_end_idx, "COT begin token should be before COT end token"
+        assert (
+            cot_begin_idx < cot_end_idx
+        ), "COT begin token should be before COT end token"
         target[:cot_begin_idx] = IGNORE_TOKEN_ID
         # target[cot_end_idx:] = IGNORE_TOKEN_ID
 
@@ -199,7 +217,7 @@ class LazySupervisedDataset(Dataset):
     def __getitem__(self, i) -> Dict[str, torch.Tensor]:
         if i in self.cached_data_dict:
             return self.cached_data_dict[i]
-
+        # print(self.raw_data[i])
         ret = preprocess([self.raw_data[i]["conversations"]], self.tokenizer)
         ret = dict(
             input_ids=ret["input_ids"][0],
@@ -220,8 +238,9 @@ def make_supervised_data_module(
     )
     rank0_print("Loading data...")
 
-    train_json = json.load(open(data_args.data_path, "r"))
-    train_dataset = dataset_cls(train_json, tokenizer=tokenizer)
+    # train_json = json.load(open(data_args.data_path, "r"))
+    raw_data = load_all_data(data_args.data_path)
+    train_dataset = dataset_cls(raw_data, tokenizer=tokenizer)
 
     if data_args.eval_data_path:
         eval_json = json.load(open(data_args.eval_data_path, "r"))
@@ -230,6 +249,59 @@ def make_supervised_data_module(
         eval_dataset = None
 
     return dict(train_dataset=train_dataset, eval_dataset=eval_dataset)
+
+
+def sample_jsonl(path, sample_ratio):
+    data = []
+    with open(path, "r") as file:
+        for line in file:
+            data.append(json.loads(line))
+    random.shuffle(data)  # 随机打乱
+    data = data[: int(len(data) * sample_ratio)]  # 取样
+    return data
+
+
+def data_convert(data):
+    if "prompt" in data and "response" in data:
+        conversation = [
+            {"from": "human", "value": data["prompt"]},
+            {"from": "gpt", "value": data["response"]},
+        ]
+        data["conversations"] = conversation
+        return data
+    else:
+        return data
+
+
+def load_one_data(one_data):
+    path = one_data["path"]
+    sample_ratio = float(one_data["sample_ratio"])
+    if sample_ratio == 0:
+        # skip this file
+        return []
+    filetype = path.split(".")[-1]
+    if filetype == "json":
+        one_data = json.load(open(path, "r"))
+        random.shuffle(one_data)  # 随机打乱
+        one_data = one_data[: int(len(one_data) * sample_ratio)]  # 顺序采样
+    elif filetype == "jsonl":
+        one_data = sample_jsonl(path, sample_ratio)
+    # for item in one_data:
+    #     data_convert(item)
+    print(f"{path} has {len(one_data)} data, sample ratio {sample_ratio}")
+    return one_data
+
+
+def load_all_data(config_path):
+    data_sources = json.load(open(config_path, "r"))
+    raw_data = []
+    for one_data in data_sources:
+        one_data = load_one_data(one_data)
+        raw_data += one_data
+    print("total data:", len(raw_data))
+    random.seed(42)
+    random.shuffle(raw_data)
+    return raw_data
 
 
 def train():
@@ -243,11 +315,19 @@ def train():
 
     # Set RoPE scaling factor
     config = transformers.AutoConfig.from_pretrained(
-        model_args.model_name_or_path if model_args.model_name_or_path else model_args.config_name,
+        (
+            model_args.model_name_or_path
+            if model_args.model_name_or_path
+            else model_args.config_name
+        ),
         cache_dir=training_args.cache_dir,
         trust_remote_code=model_args.trust_remote_code,
     )
     config.mse_ratio = training_args.mse_ratio
+    config.add_alignment = training_args.addalign
+    config.add_contrastive = training_args.addcontrastive
+    print("Add alignment loss: {}".format(config.add_alignment))
+    print("Add contrastive loss: {}".format(config.add_contrastive))
     orig_ctx_len = getattr(config, "max_position_embeddings", None)
     if orig_ctx_len and training_args.model_max_length > orig_ctx_len:
         scaling_factor = float(math.ceil(training_args.model_max_length / orig_ctx_len))
@@ -256,17 +336,22 @@ def train():
 
     # Load tokenizer
     tokenizer = transformers.AutoTokenizer.from_pretrained(
-        model_args.model_name_or_path if model_args.model_name_or_path else model_args.tokenizer_name_or_path,
+        (
+            model_args.model_name_or_path
+            if model_args.model_name_or_path
+            else model_args.tokenizer_name_or_path
+        ),
         cache_dir=training_args.cache_dir,
         model_max_length=training_args.model_max_length,
         padding_side=model_args.padding_side,
         use_fast=False,
         trust_remote_code=model_args.trust_remote_code,
     )
-    tokenizer.truncation_side='left'
-    tokenizer.padding_side='left'
+    tokenizer.truncation_side = "left"
+    tokenizer.padding_side = "left"
     # Load model
     from model.modeling_llama import LlamaForCotCausalLM
+
     if model_args.model_name_or_path:
         model = LlamaForCotCausalLM.from_pretrained(
             model_args.model_name_or_path,
@@ -277,7 +362,9 @@ def train():
     else:
         model = LlamaForCotCausalLM(config)
         n_params = sum({p.data_ptr(): p.numel() for p in model.parameters()}.values())
-        print(f"Training new model from scratch - Total size={n_params/2**20:.2f}M params")
+        print(
+            f"Training new model from scratch - Total size={n_params/2**20:.2f}M params"
+        )
 
     # If add special tokens, add this
     special_tokens_dict = {
@@ -290,7 +377,7 @@ def train():
     }
     num_added_toks = tokenizer.add_special_tokens(special_tokens_dict)
     model.resize_token_embeddings(len(tokenizer))
-    
+
     model.cot_begin_token_id = tokenizer.convert_tokens_to_ids("<[COT]>")
     model.cot_end_token_id = tokenizer.convert_tokens_to_ids("</[COT]>")
 
