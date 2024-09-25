@@ -1,9 +1,34 @@
 """Inference for FastChat models."""
+
 # from fastchat.train.llama2_flash_attn_monkey_patch import (
 #     replace_llama_attn_with_flash_attn,
 # )
 
 # replace_llama_attn_with_flash_attn()
+from conversation import *
+import argparse
+import pandas as pd
+from tqdm import tqdm
+from transformers.generation.logits_process import (
+    LogitsProcessorList,
+    RepetitionPenaltyLogitsProcessor,
+    TemperatureLogitsWarper,
+    TopKLogitsWarper,
+    TopPLogitsWarper,
+)
+from transformers import (
+    AutoTokenizer,
+    AutoModelForCausalLM,
+    LlamaTokenizer,
+    LlamaForCausalLM,
+    AutoModel,
+    AutoModelForSeq2SeqLM,
+    T5Tokenizer,
+    AutoConfig,
+)
+import torch
+import jsonlines
+import json
 from model.modeling_llama import (
     LlamaForCotCausalLM,
     LlamaForCotCausalLM,
@@ -18,38 +43,11 @@ from typing import Iterable, Optional
 import sys
 import warnings
 import os
-import copy
+import time
 import transformers
-from fastchat.model.model_adapter import load_model, get_conversation_template
-
 
 base_path = os.path.dirname(os.path.realpath(__file__))
 sys.path.append(os.path.join(base_path, "../"))
-import json
-import jsonlines
-
-import torch
-from transformers import (
-    AutoTokenizer,
-    AutoModelForCausalLM,
-    LlamaTokenizer,
-    LlamaForCausalLM,
-    AutoModel,
-    AutoModelForSeq2SeqLM,
-    T5Tokenizer,
-    AutoConfig,
-)
-from transformers.generation.logits_process import (
-    LogitsProcessorList,
-    RepetitionPenaltyLogitsProcessor,
-    TemperatureLogitsWarper,
-    TopKLogitsWarper,
-    TopPLogitsWarper,
-)
-from tqdm import tqdm
-import pandas as pd
-import argparse
-from conversation import *
 
 
 def prepare_logits_processor(
@@ -108,6 +106,180 @@ def generate_steam_ids(
         logits = out.logits
 
         last_token_logits = logits[0, -1, :]
+
+        if device == "mps":
+            # Switch to CPU by avoiding some bugs in mps backend.
+            last_token_logits = last_token_logits.float().to("cpu")
+
+        if temperature < 1e-5 or top_p < 1e-8:  # greedy
+            token = int(torch.argmax(last_token_logits))
+        else:
+            probs = torch.softmax(last_token_logits, dim=-1)
+            token = int(torch.multinomial(probs, num_samples=1))
+
+        gen_tokens.append(token)
+        output_ids.append(token)
+
+        if token in stop_token_ids:
+            stopped = True
+        else:
+            stopped = False
+
+        if i % stream_interval == 0 or i == max_new_tokens - 1 or stopped:
+            if echo:
+                tmp_output_ids = output_ids
+                rfind_start = len_prompt
+            else:
+                tmp_output_ids = output_ids[input_echo_len:]
+                rfind_start = 0
+
+            output = tokenizer.decode(
+                tmp_output_ids,
+                spaces_between_special_tokens=False,
+            )
+            if stop_str:
+                if isinstance(stop_str, str):
+                    pos = output.rfind(stop_str, rfind_start)
+                    if pos != -1:
+                        output = output[:pos]
+                        stopped = True
+                elif isinstance(stop_str, Iterable):
+                    for each_stop in stop_str:
+                        pos = output.rfind(each_stop, rfind_start)
+                        if pos != -1:
+                            output = output[:pos]
+                            stopped = True
+                            break
+                else:
+                    raise ValueError("Invalid stop field type.")
+
+            yield {
+                "text": tokenizer.decode(
+                    gen_tokens,
+                    spaces_between_special_tokens=False,
+                ),
+                "usage": {
+                    "prompt_tokens": input_echo_len,
+                    "completion_tokens": i,
+                    "total_tokens": input_echo_len + i,
+                },
+                "finish_reason": None,
+            }
+
+        if stopped:
+            break
+
+    # Finish stream event, which contains finish reason
+    if i == max_new_tokens - 1:
+        finish_reason = "length"
+    elif stopped:
+        finish_reason = "stop"
+    else:
+        finish_reason = None
+
+    yield {
+        "text": tokenizer.decode(
+            gen_tokens,
+            spaces_between_special_tokens=False,
+        ),
+        "usage": {
+            "prompt_tokens": input_echo_len,
+            "completion_tokens": i,
+            "total_tokens": input_echo_len + i,
+        },
+        "finish_reason": finish_reason,
+    }
+
+    # Clean
+    del past_key_values, out
+    gc.collect()
+    torch.cuda.empty_cache()
+
+
+@torch.inference_mode()
+def generate_stream(
+    model,
+    tokenizer,
+    params,
+    device,
+    context_len=2048,
+    stream_interval=2,
+    current_prefix_with_api=5,
+    bagging_times=5,
+):
+    print("Generating stream...")
+    print(f"Params: {params}")
+    use_plugin = params.get("use_plugin", True)
+    prompt = params["prompt"]
+    len_prompt = len(prompt)
+    temperature = float(params.get("temperature", 1.0))
+    repetition_penalty = float(params.get("repetition_penalty", 1.0))
+    top_p = float(params.get("top_p", 1.0))
+    top_k = int(params.get("top_k", -1))  # -1 means disable
+    max_new_tokens = int(params.get("max_new_tokens", 256))
+    stop_str = params.get("stop", None)
+    echo = bool(params.get("echo", True))
+    stream_interval = int(params.get("stream_interval", stream_interval))
+    stop_token_ids = params.get("stop_token_ids", None) or []
+    stop_token_ids.append(tokenizer.eos_token_id)
+
+    logits_processor = prepare_logits_processor(
+        temperature, repetition_penalty, top_p, top_k
+    )
+
+    input_ids = tokenizer(prompt).input_ids
+    input_echo_len = len(input_ids)
+    output_ids = list(input_ids)
+    # max_src_len = context_len - max_new_tokens - 8
+
+    # input_ids = input_ids[-max_src_len:]
+
+    past_key_values = out = None
+    gen_tokens = []
+    for i in range(max_new_tokens):
+        # print(f"Input ids: {tokenizer.decode(input_ids)}")
+        if i == 0 or restart_gen:
+            out = model(
+                torch.as_tensor([input_ids], device=device),
+                use_cache=True,
+            )
+            logits = out.logits
+            past_key_values = out.past_key_values
+            restart_gen = False
+        else:
+            if token == 32001:
+                out = model(
+                    input_ids=torch.as_tensor([[token]], device=device),
+                    use_cache=True,
+                    past_key_values=past_key_values,
+                    history_input_ids=torch.as_tensor(
+                        [output_ids], device=logits.device
+                    ),
+                    check_hcot=True,
+                )
+                logits = out.logits
+                past_key_values = out.past_key_values
+            else:
+                out = model(
+                    input_ids=torch.as_tensor([[token]], device=device),
+                    use_cache=True,
+                    past_key_values=past_key_values,
+                    history_input_ids=torch.as_tensor(
+                        [output_ids], device=logits.device
+                    ),
+                    check_hcot=False,
+                )
+                logits = out.logits
+                past_key_values = out.past_key_values
+
+        if logits_processor:
+            if repetition_penalty > 1.0:
+                tmp_output_ids = torch.as_tensor([output_ids], device=logits.device)
+            else:
+                tmp_output_ids = None
+            last_token_logits = logits_processor(tmp_output_ids, logits[:, -1, :])[0]
+        else:
+            last_token_logits = logits[0, -1, :]
 
         if device == "mps":
             # Switch to CPU by avoiding some bugs in mps backend.
@@ -229,11 +401,12 @@ def generate_chat_response_shot(model, tokenizer, device, prompt, args):
         "prompt": input_prompt,
         "temperature": 0.01,
         "top_p": 1.0,
-        "max_new_tokens": 1024,
+        "max_new_tokens": 512,
         "use_plugin": True,
         "stream_interval": 1,
     }
-    completion = generate_steam_ids(model, tokenizer, params, device)
+    with torch.no_grad():
+        completion = generate_stream(model, tokenizer, params, device)
     for one_text in completion:
         pass
     return one_text
@@ -249,9 +422,12 @@ def process_data_with_chat_responses(data, model, tokenizer, device, args):
         prompt = (
             item["instruction"] + item["input"]
         )  # input to model is the combination of inst and input
+        inference_time_start = time.time()
         response = generate_chat_response_shot(model, tokenizer, device, prompt, args)
+        inference_time_end = time.time()
         item["response"] = response["text"]
         item["raw_response"] = response
+        item["time_consume"] = inference_time_end - inference_time_start
         processed_data.append(item)
         print("Raw prompt:", prompt)
         print("Raw answer:", item["response"])
@@ -267,11 +443,13 @@ def generate_chat_responses(model_path, data_file, output_file, args):
     device = "cpu" if not torch.cuda.is_available() else "cuda"
     if args.hcot_model:
         if "llama" in args.model_name:
-            model = LlamaForLLMHcotCausalLM.from_pretrained(args.model_path)
+            model = LlamaForLLMHcotCausalLM.from_pretrained(
+                args.model_path, device_map="auto"
+            )
             tokenizer = AutoTokenizer.from_pretrained(args.model_path)
             model.eval()
-            device = torch.device("cuda")
-            model.to(device)
+            # device = torch.device("cuda")
+            # model.to(device)
         elif "mistral" in args.model_name:
             from mistral_model.modeling_mistral import MistralForLLMHcotCausalLM
 
@@ -284,6 +462,7 @@ def generate_chat_responses(model_path, data_file, output_file, args):
         model, tokenizer = load_model(
             model_path, device=device, num_gpus=args.device_num
         )
+        model.eval()
 
     if data_file.endswith("json"):
         data = load_json(data_file)
